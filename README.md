@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/github/license/yoheinakajima/ditto)](LICENSE)
 
-**Ditto** - *the simplest self-building coding agent*.
+**Ditto Xtra** - *an extension of the simplest self-building coding agent*.
 
 Ditto is a user-friendly tool that allows you to generate a multi-file Flask application from simple natural language descriptions using a no-code interface. By leveraging a simple LLM loop with a few tools, Ditto automates the coding process, (occasionally) turning your ideas into functional web applications (or at least trying and getting close).
 
