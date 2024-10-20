@@ -6,23 +6,15 @@ import traceback
 from flask import Flask, Blueprint, request, send_from_directory, render_template_string, jsonify
 from threading import Thread
 from time import sleep
-
-# Correctly import the completion function from LiteLLM
 from litellm import completion, supports_function_calling
 
 # Configuration
-MODEL_NAME = os.environ.get('LITELLM_MODEL', 'gpt-4o')  # Default model; can be swapped easily
-
-# Initialize Flask app
-app = Flask(__name__)
-
+MODEL_NAME = os.environ.get('LITELLM_MODEL', 'gpt-4')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECTS_DIR = os.path.join(BASE_DIR, 'projects')
 LOG_FILE = "flask_app_builder_log.json"
 
-# Directory paths
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
-STATIC_DIR = os.path.join(BASE_DIR, 'static')
-ROUTES_DIR = os.path.join(BASE_DIR, 'routes')
+app = Flask(__name__)
 
 # Initialize progress tracking
 progress = {
@@ -33,13 +25,9 @@ progress = {
     "completed": False
 }
 
-# Ensure directories exist and create __init__.py in routes
 def create_directory(path):
     if not os.path.exists(path):
         os.makedirs(path)
-        # If creating the routes directory, add __init__.py
-        if path == ROUTES_DIR:
-            create_file(os.path.join(ROUTES_DIR, '__init__.py'), '')
         return f"Created directory: {path}"
     return f"Directory already exists: {path}"
 
@@ -71,49 +59,11 @@ def fetch_code(file_path):
     except Exception as e:
         return f"Error fetching code from {file_path}: {e}"
 
-def load_routes():
-    try:
-        if BASE_DIR not in sys.path:
-            sys.path.append(BASE_DIR)
-        for filename in os.listdir(ROUTES_DIR):
-            if filename.endswith('.py') and filename != '__init__.py':
-                module_name = filename[:-3]
-                module_path = f'routes.{module_name}'
-                try:
-                    if module_path in sys.modules:
-                        importlib.reload(sys.modules[module_path])
-                    else:
-                        importlib.import_module(module_path)
-                    module = sys.modules.get(module_path)
-                    if module:
-                        # Find all blueprint objects in the module
-                        for attr_name in dir(module):
-                            attr = getattr(module, attr_name)
-                            if isinstance(attr, Blueprint):
-                                app.register_blueprint(attr)
-                except Exception as e:
-                    print(f"Error importing module {module_path}: {e}")
-                    continue
-        print("Routes loaded successfully.")
-        return "Routes loaded successfully."
-    except Exception as e:
-        print(f"Error in load_routes: {e}")
-        return f"Error loading routes: {e}"
-
 def task_completed():
     progress["status"] = "completed"
     progress["completed"] = True
     return "Task marked as completed."
 
-# Initialize necessary directories
-create_directory(TEMPLATES_DIR)
-create_directory(STATIC_DIR)
-create_directory(ROUTES_DIR)  # This will also create __init__.py in routes
-
-# Load routes once at initiation
-load_routes()
-
-# Function to log history to file
 def log_to_file(history_dict):
     try:
         with open(LOG_FILE, 'w') as log_file:
@@ -121,25 +71,55 @@ def log_to_file(history_dict):
     except Exception as e:
         pass  # Silent fail
 
-# Default route to serve generated index.html or render a form
+def get_projects():
+    projects = []
+    if os.path.exists(PROJECTS_DIR):
+        for project in os.listdir(PROJECTS_DIR):
+            project_path = os.path.join(PROJECTS_DIR, project)
+            if os.path.isdir(project_path):
+                projects.append(project)
+    return projects
+
 @app.route('/', methods=['GET', 'POST'])
 def home():
-    index_file = os.path.join(TEMPLATES_DIR, 'index.html')
-    if os.path.exists(index_file):
-        return send_from_directory(TEMPLATES_DIR, 'index.html')
-    else:
-        if request.method == 'POST':
-            user_input = request.form.get('user_input')
-            # Run the main loop with the user's input in a separate thread
-            progress["status"] = "running"
-            progress["iteration"] = 0
-            progress["output"] = ""
-            progress["completed"] = False
-            thread = Thread(target=run_main_loop, args=(user_input,))
-            thread.start()
+    if request.method == 'POST':
+        user_input = request.form.get('user_input')
+        project_name = request.form.get('project_name')
+        if not project_name:
             return render_template_string('''
-                <h1>Progress</h1>
-                <pre id="progress">{{ progress_output }}</pre>
+                <h1>Error</h1>
+                <p>Project name is required.</p>
+                <a href="/">Back to Home</a>
+            ''')
+        
+        project_dir = os.path.join(PROJECTS_DIR, project_name)
+        create_directory(project_dir)
+        
+        progress["status"] = "running"
+        progress["iteration"] = 0
+        progress["output"] = ""
+        progress["completed"] = False
+        thread = Thread(target=run_main_loop, args=(user_input, project_dir))
+        thread.start()
+        return render_template_string('''
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Progress - {{ project_name }}</title>
+                <style>
+                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
+                    h1 { color: #2c3e50; }
+                    #progress { background-color: #f9f9f9; border: 1px solid #ddd; padding: 15px; border-radius: 5px; }
+                    #refresh-btn { display: none; background-color: #3498db; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
+                    #refresh-btn:hover { background-color: #2980b9; }
+                </style>
+            </head>
+            <body>
+                <h1>Progress - {{ project_name }}</h1>
+                <div id="progress">{{ progress_output }}</div>
+                <button id="refresh-btn" onclick="location.reload();">Refresh Page</button>
                 <script>
                     setInterval(function() {
                         fetch('/progress')
@@ -152,19 +132,123 @@ def home():
                         });
                     }, 2000);
                 </script>
-                <button id="refresh-btn" style="display:none;" onclick="location.reload();">Refresh Page</button>
-            ''', progress_output=progress["output"])
-        else:
-            return render_template_string('''
+            </body>
+            </html>
+        ''', progress_output=progress["output"], project_name=project_name)
+    else:
+        projects = get_projects()
+        return render_template_string('''
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Flask App Builder</title>
+                <style>
+                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
+                    h1 { color: #2c3e50; }
+                    form { background-color: #f9f9f9; border: 1px solid #ddd; padding: 20px; border-radius: 5px; }
+                    label { display: block; margin-bottom: 5px; }
+                    input[type="text"], textarea { width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 4px; }
+                    input[type="submit"] { background-color: #3498db; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
+                    input[type="submit"]:hover { background-color: #2980b9; }
+                    .project-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-top: 20px; }
+                    .project-card { background-color: #f9f9f9; border: 1px solid #ddd; padding: 15px; border-radius: 5px; text-align: center; }
+                </style>
+            </head>
+            <body>
                 <h1>Flask App Builder</h1>
                 <form method="post">
-                    <label for="user_input">Describe the Flask app you want to create:</label><br>
-                    <textarea id="user_input" name="user_input" style="width:100%; height:150px; padding:10px; border:1px solid #ccc; border-radius:4px; font-size:16px; resize:vertical;"></textarea><br><br>
-                    <input type="submit" value="Submit">
+                    <label for="project_name">Project Name:</label>
+                    <input type="text" id="project_name" name="project_name" required>
+                    <label for="user_input">Describe the Flask app you want to create:</label>
+                    <textarea id="user_input" name="user_input" rows="6" required></textarea>
+                    <input type="submit" value="Create Project">
                 </form>
-            ''')
+                <h2>Existing Projects</h2>
+                <div class="project-grid">
+                    {% for project in projects %}
+                        <div class="project-card">
+                            <h3>{{ project }}</h3>
+                            <a href="/project/{{ project }}">View Project</a>
+                        </div>
+                    {% endfor %}
+                </div>
+            </body>
+            </html>
+        ''', projects=projects)
 
-# Route to provide progress updates
+@app.route('/project/<project_name>')
+def view_project(project_name):
+    project_dir = os.path.join(PROJECTS_DIR, project_name)
+    if not os.path.exists(project_dir):
+        return "Project not found", 404
+    
+    files = []
+    for root, dirs, filenames in os.walk(project_dir):
+        for filename in filenames:
+            files.append(os.path.relpath(os.path.join(root, filename), project_dir))
+    
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>{{ project_name }} - Files</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
+                h1 { color: #2c3e50; }
+                ul { list-style-type: none; padding: 0; }
+                li { margin-bottom: 10px; }
+                a { color: #3498db; text-decoration: none; }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <h1>{{ project_name }} - Files</h1>
+            <ul>
+                {% for file in files %}
+                    <li><a href="/project/{{ project_name }}/file/{{ file }}">{{ file }}</a></li>
+                {% endfor %}
+            </ul>
+            <a href="/">Back to Home</a>
+        </body>
+        </html>
+    ''', project_name=project_name, files=files)
+
+@app.route('/project/<project_name>/file/<path:filename>')
+def view_file(project_name, filename):
+    file_path = os.path.join(PROJECTS_DIR, project_name, filename)
+    if not os.path.exists(file_path):
+        return "File not found", 404
+    
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>{{ filename }} - {{ project_name }}</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
+                h1 { color: #2c3e50; }
+                pre { background-color: #f9f9f9; border: 1px solid #ddd; padding: 15px; border-radius: 5px; overflow-x: auto; }
+                a { color: #3498db; text-decoration: none; }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <h1>{{ filename }}</h1>
+            <pre><code>{{ content }}</code></pre>
+            <a href="/project/{{ project_name }}">Back to Project Files</a>
+        </body>
+        </html>
+    ''', filename=filename, project_name=project_name, content=content)
+
 @app.route('/progress')
 def get_progress():
     return jsonify(progress)
@@ -270,11 +354,8 @@ tools = [
     }
 ]
 
-def run_main_loop(user_input):
-    # Reset the history_dict for each run
-    history_dict = {
-        "iterations": []
-    }
+def run_main_loop(user_input, project_dir):
+    history_dict = {"iterations": []}
 
     if not supports_function_calling(MODEL_NAME):
         progress["status"] = "error"
@@ -282,28 +363,28 @@ def run_main_loop(user_input):
         progress["completed"] = True
         return "Model does not support function calling."
 
-    max_iterations = progress["max_iterations"]  # Prevent infinite loops
+    max_iterations = progress["max_iterations"]
     iteration = 0
 
-    # Updated messages array with enhanced prompt
     messages = [
         {
             "role": "system",
             "content": (
                 "You are an expert Flask developer tasked with building a complete, production-ready Flask application based on the user's description. "
                 "Before coding, carefully plan out all the files, routes, templates, and static assets needed. "
+                f"All files should be created within the project directory: {project_dir}\n"
                 "Follow these steps:\n"
                 "1. **Understand the Requirements**: Analyze the user's input to fully understand the application's functionality and features.\n"
                 "2. **Plan the Application Structure**: List all the routes, templates, and static files that need to be created. Consider how they interact.\n"
                 "3. **Implement Step by Step**: For each component, use the provided tools to create directories, files, and write code. Ensure each step is thoroughly completed before moving on.\n"
                 "4. **Review and Refine**: Use `fetch_code` to review the code you've written. Update files if necessary using `update_file`.\n"
                 "5. **Ensure Completeness**: Do not leave any placeholders or incomplete code. All functions, routes, and templates must be fully implemented and ready for production.\n"
-                "6. **Do Not Modify `main.py`**: Focus only on the `templates/`, `static/`, and `routes/` directories.\n"
-                "7. **Finalize**: Once everything is complete and thoroughly tested, call `task_completed()` to finish.\n\n"
+                "6. **Finalize**: Once everything is complete and thoroughly tested, call `task_completed()` to finish.\n\n"
                 "Constraints and Notes:\n"
-                "- The application files must be structured within the predefined directories: `templates/`, `static/`, and `routes/`.\n"
-                "- Routes should be modular and placed inside the `routes/` directory as separate Python files.\n"
-                "- The `index.html` served from the `templates/` directory is the entry point of the app. Update it appropriately if additional templates are created.\n"
+                f"- The application files must be structured within the project directory: {project_dir}\n"
+                "- Routes should be modular and placed inside a `routes/` directory as separate Python files.\n"
+                "- Templates should be placed in a `templates/` directory.\n"
+                "- Static files (CSS, JS, images) should be placed in a `static/` directory.\n"
                 "- Do not use placeholders like 'Content goes here'. All code should be complete and functional.\n"
                 "- Do not ask the user for additional input; infer any necessary details to complete the application.\n"
                 "- Ensure all routes are properly linked and that templates include necessary CSS and JS files.\n"
@@ -325,9 +406,8 @@ def run_main_loop(user_input):
 
     while iteration < max_iterations:
         progress["iteration"] = iteration + 1
-        # Create a new iteration dictionary for each loop
         current_iteration = {
-            "iteration": iteration + 1,  # Start from 1
+            "iteration": iteration + 1,
             "actions": [],
             "llm_responses": [],
             "tool_results": [],
@@ -351,13 +431,11 @@ def run_main_loop(user_input):
                 iteration += 1
                 continue
 
-            # Extract LLM response and append to current iteration
             response_message = response.choices[0].message
             content = response_message.content or ""
             current_iteration['llm_responses'].append(content)
 
-            # Prepare the output string
-            output += f"\n<h2>Iteration {iteration + 1}:</h2>\n"
+            output += f"\n<h3>Iteration {iteration + 1}:</h3>\n"
 
             tool_calls = response_message.tool_calls
 
@@ -381,31 +459,26 @@ def run_main_loop(user_input):
                     try:
                         function_args = json.loads(tool_call.function.arguments)
 
-                        # Call the tool function and store result
                         function_response = function_to_call(**function_args)
 
-                        # Append the tool result under the current iteration
                         current_iteration['tool_results'].append({
                             'tool': function_name,
                             'result': function_response
                         })
 
-                        # Include tool result in the output
                         output += f"<strong>Tool Result ({function_name}):</strong>\n<p>{function_response}</p>\n"
 
-                        # Add tool call details to the conversation
                         messages.append(
                             {"tool_call_id": tool_call.id, "role": "tool", "name": function_name, "content": function_response}
                         )
 
-                        # Check if the assistant called 'task_completed' to signal completion
                         if function_name == "task_completed":
                             progress["status"] = "completed"
                             progress["completed"] = True
                             output += "\n<h2>COMPLETE</h2>\n"
                             progress["output"] = output
                             log_to_file(history_dict)
-                            return output  # Exit the function
+                            return output
 
                     except Exception as tool_error:
                         error_message = f"Error executing {function_name}: {tool_error}"
@@ -415,7 +488,6 @@ def run_main_loop(user_input):
                             'traceback': traceback.format_exc()
                         })
 
-                # Second response to include the tool call
                 second_response = completion(
                     model=MODEL_NAME,
                     messages=messages
@@ -457,5 +529,5 @@ def run_main_loop(user_input):
     return output
 
 if __name__ == '__main__':
-    # Start the Flask app
+    create_directory(PROJECTS_DIR)
     app.run(host='0.0.0.0', port=8080)
