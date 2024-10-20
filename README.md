@@ -1,4 +1,4 @@
-# Ditto
+# Ditto Xtra
 
 [![License](https://img.shields.io/github/license/yoheinakajima/ditto)](LICENSE)
 
